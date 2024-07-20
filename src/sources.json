@@ -1,0 +1,103 @@
+[
+    {
+        "id": "free-proxy-list.net",
+        "url": "https://free-proxy-list.net",
+        "method": "GET",
+        "parser": {
+            "pandas": {
+                "table_index": 0,
+                "ip": "IP Address",
+                "port": "Port",
+                "combined": null
+            }
+        }
+    },
+    {
+        "id": "us-proxy.org",
+        "url": "https://www.us-proxy.org",
+        "method": "GET",
+        "parser": {
+            "pandas": {
+                "table_index": 0,
+                "ip": "IP Address",
+                "port": "Port",
+                "combined": null
+            }
+        }
+    },
+    {
+        "id": "proxydb.net",
+        "url": "http://proxydb.net",
+        "method": "GET",
+        "parser": {
+            "pandas": {
+                "table_index": 0,
+                "ip": null,
+                "port": null,
+                "combined": "Proxy"
+            }
+        }
+    },
+    {
+        "id": "proxy-list.download",
+        "url": "https://www.proxy-list.download/HTTP",
+        "method": "GET",
+        "parser": {
+            "pandas": {
+                "table_index": 0,
+                "ip": "IP Address",
+                "port": "Port",
+                "combined": null
+            }
+        }
+    },
+    {
+        "id": "vpnoverview.com",
+        "url": "https://vpnoverview.com/privacy/anonymous-browsing/free-proxy-servers",
+        "method": "GET",
+        "parser": {
+            "pandas": {
+                "table_index": 0,
+                "ip": "IP address",
+                "port": "Port",
+                "combined": null
+            }
+        }
+    },
+    {
+        "id": "proxylist.geonode.com",
+        "url": "https://proxylist.geonode.com/api/proxy-list?limit=300&page=1&sort_by=lastChecked&sort_type=desc&protocols=http,https",
+        "method": "GET",
+        "parser": {
+            "json": {
+                "data": "data",
+                "ip": "ip",
+                "port": "port"
+            }
+        }
+    },
+    {
+        "id": "github.com/clarketm/proxy-list",
+        "url": "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+        "method": "GET",
+        "parser": {
+            "txt": {}
+        }
+    },
+    {
+        "id": "github.com/monosans/proxy-list",
+        "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "method": "GET",
+        "parser": {
+            "txt": {}
+        }
+    },
+    {
+        "id": "github.com/TheSpeedX/PROXY-List",
+        "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "method": "GET",
+        "parser": {
+            "txt": {}
+        }
+    }
+]
