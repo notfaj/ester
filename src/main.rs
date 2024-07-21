@@ -4,6 +4,12 @@ use std::io::Read;
 use serde::Serialize;
 use serde::Deserialize;
 use serde_json::Value;
+use reqwest::{Client, Proxy as RequestProxy, Method};
+extern crate scraper;
+use scraper::{Html, Selector};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Parser {
@@ -38,8 +44,6 @@ struct Source {
     parser: Parser
 }
 
-use reqwest::{Client, Method};
-
 // Function to make an HTTP request
 async fn make_request(url: String, method: String) -> Result<String, reqwest::Error> {
     // Parse the method string to reqwest::Method
@@ -63,7 +67,7 @@ async fn make_request(url: String, method: String) -> Result<String, reqwest::Er
     
 }
 
-#[derive(Debug)] 
+#[derive(Debug, Clone)] 
 struct Proxy {
     ip: String,
     port: u16,
@@ -76,6 +80,32 @@ impl Proxy {
             ip: ip.to_string(),
             port: parsed_port,
         })
+    }
+
+    async fn test_proxy(&self) -> bool {
+        let proxy_url = format!("http://{}:{}", self.ip, self.port);
+
+        // Create a reqwest client with proxy settings
+        let client = match reqwest::Client::builder()
+            .proxy(RequestProxy::all(&proxy_url).expect("Invalid proxy URL"))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return false,
+        };
+
+        // Make a GET request using the client with a timeout
+        let response = match timeout(Duration::from_secs(10), client.get("https://ipecho.net/plain").send()).await {
+            Ok(response) => response,
+            Err(_) => return false, // Timeout or other error
+        };
+
+        // Check if the response status is successful
+        if let Ok(response) = response {
+            response.status().is_success()
+        } else {
+            false // Timeout occurred
+        }
     }
 }
 
@@ -102,7 +132,6 @@ fn parse_proxies_txt(input: &str) -> Vec<Proxy> {
         .collect()
 }
 
-// Function to process JSON response string and create proxies
 fn parse_proxies_json(response_str: &str) -> Vec<Proxy> {
     // Parse JSON string into a serde_json::Value
     let json_value: Value = match serde_json::from_str(response_str) {
@@ -170,9 +199,134 @@ fn parse_proxies_json(response_str: &str) -> Vec<Proxy> {
     proxies
 }
 
+fn parse_proxies_from_response(response_str: &str, pandas_parser: &PandasParser) -> Vec<Proxy> {
+    let mut proxies: Vec<Proxy> = Vec::new();
+
+    // Parse the HTML document
+    let document = Html::parse_document(&response_str);
+
+    // Check if pandas_parser.combined is None
+    if pandas_parser.combined.is_none() {
+        // Select the first table element in the document
+        let table_selector = Selector::parse("table").unwrap();
+        let table = match document.select(&table_selector).next() {
+            Some(table) => table,
+            None => {
+                println!("Table not found");
+                return proxies; // Return empty vector or handle not found case
+            }
+        };
+
+        // Iterate over each row in the table (excluding the first child)
+        for row in table.select(&Selector::parse("tr:not(:first-child)").unwrap()) {
+            let ip_selector = Selector::parse("td:nth-child(1)").unwrap();
+            let port_selector = Selector::parse("td:nth-child(2)").unwrap();
+
+            // Extract IP address and port number from the row
+            if let Some(ip_element) = row.select(&ip_selector).next() {
+                if let Some(port_element) = row.select(&port_selector).next() {
+                    let ip_address = ip_element.text().collect::<Vec<_>>()[0].to_string();
+                    let port_number = port_element.text().collect::<Vec<_>>()[0].to_string();
+
+                    let ip = ip_address.trim();
+                    let port = port_number.trim();
+
+                    // Attempt to create a Proxy instance from IP and port
+                    match Proxy::new(ip, port) {
+                        Ok(proxy) => {
+                            // Successfully created Proxy instance
+                            proxies.push(proxy);
+                        },
+                        Err(err) => {
+                            // Handle error if parsing fails
+                            eprintln!("Failed to create Proxy: {}", err);
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(value) = pandas_parser.combined.as_ref() {
+        match value.as_str() {
+            "Proxy" => {
+                println!("pandas_parser.combined is 'Proxy'");
+                // Handle 'Proxy' case as needed
+                // Example: Some specific logic or action
+            },
+            _ => {
+                // Handle other cases if needed
+                todo!(); // Placeholder for future implementation
+            },
+        }
+    }
+
+    proxies // Return the vector of proxies
+}
+
+fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> Vec<Proxy> {
+    match parser{
+        Parser {
+            pandas: Some(pandas_parser),
+            json: None,
+            txt: None,
+        } => {
+            // println!("PandasParser found: {:?}", pandas_parser);
+            // Handle PandasParser case
+            parse_proxies_from_response(&response_str, &pandas_parser)
+        }
+        Parser {
+            pandas: None,
+            json: Some(_json_parser),
+            txt: None,
+        } => {
+            // println!("JsonParser found: {:?}", json_parser);
+            // Handle JsonParser case
+            parse_proxies_json(&response_str)
+        }
+        Parser {
+            pandas: None,
+            json: None,
+            txt: Some(_txt_parser),
+        } => {
+            // println!("TxtParser found: {:?}", txt_parser);
+            // Handle TxtParser case
+            parse_proxies_txt(&response_str)
+        }
+        _ => {
+            println!("Unknown or unsupported parser configuration");
+            Vec::new() // Return an empty vector or handle unsupported case
+        }
+    }
+
+}
+
+async fn batch_test_proxies(proxy_list: Vec<Arc<Proxy>>, concurrent_limit: usize) -> Vec<Proxy> {
+    let (tx, mut rx) = mpsc::channel(concurrent_limit);
+
+    for proxy in proxy_list {
+        let tx = tx.clone();
+        let proxy_clone = proxy.clone();
+
+        tokio::spawn(async move {
+            if proxy_clone.test_proxy().await {
+                if let Err(_) = tx.send((*proxy_clone).clone()).await {
+                    eprintln!("Error sending result to channel");
+                }
+            }
+        });
+    }
+
+    drop(tx);
+
+    let mut tested_proxies = Vec::new();
+    while let Some(result) = rx.recv().await {
+        tested_proxies.push(result); // Push Proxy directly
+    }
+
+    tested_proxies
+}
+
 #[tokio::main]
 async fn main() {
-
     let file_name = "src\\sources.json";
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let file_path = current_dir.join(file_name);
@@ -187,10 +341,13 @@ async fn main() {
     // Parse the JSON content into a Person struct
     let proxysource: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
     // Create an empty vector to hold proxies
+    
     let mut proxy_list: Vec<Proxy> = Vec::new();
+
     //Print the parsed data
     for source in proxysource {
         // println!("Source ID: {}, URL: {}, Parser: {:#?}", source.id, source.url, source.parser);
+        println!("URL: {}", source.url);
         let response: Result<String, reqwest::Error> = make_request(source.url, source.method).await;
         let response_str: String = match response{
                 Ok(result) => result,
@@ -199,31 +356,20 @@ async fn main() {
                     continue;
                 }
             };
-        if source.parser.txt.is_none() && source.parser.json.is_none(){
-            // type panda
-            println!("panda");
-        } else if source.parser.pandas.is_none() && source.parser.json.is_none() {
-            // txt
-            println!("txt");
-            let proxies: Vec<Proxy> = parse_proxies_txt(&response_str);
-            proxy_list.extend(proxies)
-        } else if source.parser.pandas.is_none() && source.parser.txt.is_none() {
-            // json 
-            println!("json");
-            let proxies: Vec<Proxy> = parse_proxies_json(&response_str);
-            proxy_list.extend(proxies)
-            
-            
-        } else {
-            println!("no type");
+        let proxies: Vec<Proxy> = process_response_and_update_proxies(&response_str, &source.parser);
+        let arc_proxies: Vec<Arc<Proxy>> = proxies.into_iter().map(Arc::new).collect();
+        let concurrent_limit = 300; // Define your concurrent limit here
+        println!("Initial length: {}", arc_proxies.len());
+        let tested_proxies = batch_test_proxies(arc_proxies, concurrent_limit).await;
+        println!("Final length: {}", tested_proxies.len());
+        proxy_list.extend(tested_proxies)
 
-        }
-        
     }
+
     // Print the IP and port for each parsed proxy
-    for proxy in &proxy_list {
-        println!("IP: {}, Port: {}", proxy.ip, proxy.port);
-    }
+    // for proxy in &proxy_list {
+    //     println!("IP: {}, Port: {}", proxy.ip, proxy.port);
+    // }
 
     // Get the number of elements in the vector
     let num_objects = &proxy_list.len();

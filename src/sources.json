@@ -26,19 +26,6 @@
         }
     },
     {
-        "id": "proxydb.net",
-        "url": "http://proxydb.net",
-        "method": "GET",
-        "parser": {
-            "pandas": {
-                "table_index": 0,
-                "ip": null,
-                "port": null,
-                "combined": "Proxy"
-            }
-        }
-    },
-    {
         "id": "proxy-list.download",
         "url": "https://www.proxy-list.download/HTTP",
         "method": "GET",
@@ -77,16 +64,16 @@
         }
     },
     {
-        "id": "github.com/clarketm/proxy-list",
-        "url": "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+        "id": "github.com/monosans/proxy-list",
+        "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
         "method": "GET",
         "parser": {
             "txt": {}
         }
     },
     {
-        "id": "github.com/monosans/proxy-list",
-        "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "id": "github.com/TheSpeedX/PROXY-List",
+        "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
         "method": "GET",
         "parser": {
             "txt": {}
