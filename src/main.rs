@@ -1,4 +1,3 @@
-use serde_json;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -290,7 +289,7 @@ fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> V
         } => {
             // println!("PandasParser found: {:?}", pandas_parser);
             // Handle PandasParser case
-            parse_proxies_from_response(&response_str, &pandas_parser)
+            parse_proxies_from_response(response_str, pandas_parser)
         }
         Parser {
             pandas: None,
@@ -299,7 +298,7 @@ fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> V
         } => {
             // println!("JsonParser found: {:?}", json_parser);
             // Handle JsonParser case
-            parse_proxies_json(&response_str)
+            parse_proxies_json(response_str)
         }
         Parser {
             pandas: None,
@@ -308,7 +307,7 @@ fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> V
         } => {
             // println!("TxtParser found: {:?}", txt_parser);
             // Handle TxtParser case
-            parse_proxies_txt(&response_str)
+            parse_proxies_txt(response_str)
         }
         _ => {
             println!("Unknown or unsupported parser configuration");
