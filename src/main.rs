@@ -423,8 +423,6 @@ async fn main() {
     //     println!("IP: {}, Port: {}", proxy.ip, proxy.port);
     // }
 
-    print!("done")
-
 }
 
 #[cfg(test)]
@@ -435,7 +433,6 @@ mod tests {
     async fn main() {
         let proxy_list = get_proxies().await;
         println!("Final list of proxies: {:?}", proxy_list);
-        println!("done")
     }
 
 }
