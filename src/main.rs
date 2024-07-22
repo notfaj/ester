@@ -1,3 +1,4 @@
+
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -11,6 +12,22 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use std::io;
+
+#[cfg(feature = "debug-print")]
+macro_rules! debug_println {
+    ($fmt:expr) => {
+        println!($fmt);
+    };
+    ($fmt:expr, $($arg:tt)*) => {
+        println!($fmt, $($arg)*);
+    };
+}
+
+#[cfg(not(feature = "debug-print"))]
+macro_rules! debug_println {
+    ($fmt:expr) => {};
+    ($fmt:expr, $($arg:tt)*) => {};
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Parser {
@@ -127,6 +144,7 @@ impl Proxy {
     }
 
 }
+
 fn parse_proxies_txt(input: &str) -> Vec<Proxy> {
     input
         .lines()
@@ -343,7 +361,11 @@ async fn batch_test_proxies(proxy_list: Vec<Arc<Proxy>>, concurrent_limit: usize
     tested_proxies
 }
 
-async fn load_and_test_proxies_from_file(file_path: &str, concurrent_limit: usize) -> Vec<Proxy> {
+async fn get_proxies() -> Vec<Proxy> {
+    let file_path = "src\\sources.json";
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let file_path = current_dir.join(file_path);
+    let concurrent_limit = 50;
     // Read JSON file
     let mut file = File::open(file_path).expect("Failed to open file");
     let mut json_content = String::new();
@@ -353,13 +375,13 @@ async fn load_and_test_proxies_from_file(file_path: &str, concurrent_limit: usiz
     let proxysources: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
 
     // Print initial count of proxies
-    println!("Initial number of proxies: {}", proxysources.len());
+    debug_println!("Initial number of proxies: {}", proxysources.len());
 
     // Create tasks to process each source concurrently
     let mut tasks = vec![];
     for source in proxysources {
         let task = tokio::spawn(async move {
-            let url = source.url.to_string();
+            let _url = source.url.to_string();
             let response = make_request(source.url.clone(), source.method.clone(), 10).await;
             let response_str = match response {
                 Ok(result) => result,
@@ -371,9 +393,9 @@ async fn load_and_test_proxies_from_file(file_path: &str, concurrent_limit: usiz
 
             let proxies = process_response_and_update_proxies(&response_str, &source.parser);
             let arc_proxies: Vec<Arc<Proxy>> = proxies.into_iter().map(Arc::new).collect();
-            println!("Initial length: {}, link:{}", arc_proxies.len(), url);
+            debug_println!("Initial length: {}, link:{}", arc_proxies.len(), _url);
             let tested_proxies = batch_test_proxies(arc_proxies, concurrent_limit).await;
-            println!("Final length: {}, link:{}", tested_proxies.len(), url);
+            debug_println!("Final length: {}, link:{}", tested_proxies.len(), _url);
             tested_proxies
         });
         tasks.push(task);
@@ -386,27 +408,34 @@ async fn load_and_test_proxies_from_file(file_path: &str, concurrent_limit: usiz
         proxy_list.extend(result);
     }
 
-    println!("Total proxies tested: {}", proxy_list.len());
+    debug_println!("Total proxies left: {}", proxy_list.len());
     proxy_list
 }
 
-#[tokio::main]
+#[tokio::main] 
 async fn main() {
-    // Adjust the file path as needed
-    let file_path = "src\\sources.json";
-    let current_dir = env::current_dir().expect("Failed to get current directory");
-    let file_path = current_dir.join(file_path);
 
-    let proxy_list = load_and_test_proxies_from_file(file_path.to_str().unwrap(), 50).await;
+    let proxy_list = get_proxies().await;
     println!("Final list of proxies: {:?}", proxy_list);
 
-    // let arc_proxies: Vec<Arc<Proxy>> = proxy_list.into_iter().map(Arc::new).collect();
-    // test_proxies_speed(arc_proxies, url, method).await;
-
-    // Print the IP and port for each parsed proxy
+    // // Print the IP and port for each parsed proxy
     // for proxy in &proxy_list {
     //     println!("IP: {}, Port: {}", proxy.ip, proxy.port);
     // }
+
     print!("done")
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn main() {
+        let proxy_list = get_proxies().await;
+        println!("Final list of proxies: {:?}", proxy_list);
+        println!("done")
+    }
 
 }

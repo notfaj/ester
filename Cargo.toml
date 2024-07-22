@@ -15,3 +15,6 @@ select = "0.6"
 scraper = "0.12"
 futures = "0.3"
 fake_user_agent = "0.2.1"
+
+[features]
+debug-print = []
