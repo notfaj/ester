@@ -53,7 +53,7 @@
     },
     {
         "id": "proxylist.geonode.com",
-        "url": "https://proxylist.geonode.com/api/proxy-list?limit=300&page=1&sort_by=lastChecked&sort_type=desc&protocols=http,https",
+        "url": "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http,https",
         "method": "GET",
         "parser": {
             "json": {
@@ -66,14 +66,6 @@
     {
         "id": "github.com/monosans/proxy-list",
         "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-        "method": "GET",
-        "parser": {
-            "txt": {}
-        }
-    },
-    {
-        "id": "github.com/TheSpeedX/PROXY-List",
-        "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
         "method": "GET",
         "parser": {
             "txt": {}

@@ -1,4 +1,5 @@
 use serde_json;
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use serde::Serialize;
@@ -10,6 +11,7 @@ use scraper::{Html, Selector};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
+use std::io;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Parser {
@@ -45,26 +47,43 @@ struct Source {
 }
 
 // Function to make an HTTP request
-async fn make_request(url: String, method: String) -> Result<String, reqwest::Error> {
+async fn make_request(url: String, method: String, timeout_seconds: u64) -> Result<String, io::Error> {
     // Parse the method string to reqwest::Method
     let req_method = match method.to_uppercase().as_str() {
         "GET" => Method::GET,
         "POST" => Method::POST,
         "PUT" => Method::PUT,
         "DELETE" => Method::DELETE,
-        _ => todo!()
+        _ => {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported HTTP method"));
+        }
     };
 
-    // Create a reqwest client
-    let client = Client::new();
+    // Create a reqwest client with timeout
+    let client = Client::builder()
+        .timeout(Duration::from_secs(timeout_seconds))
+        .build()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // Make the HTTP request
-    let response = client.request(req_method, url).send().await?;
+    let response = client
+        .request(req_method.clone(), &url)
+        .send()
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        return Err(io::Error::new(io::ErrorKind::Other, format!("Request failed with status code: {}", response.status())));
+    }
 
     // Read the response body as a string
-    let body = response.text().await?;
-    return Ok(body)
-    
+    let body = response
+        .text()
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    Ok(body)
 }
 
 #[derive(Debug, Clone)] 
@@ -95,7 +114,7 @@ impl Proxy {
         };
 
         // Make a GET request using the client with a timeout
-        let response = match timeout(Duration::from_secs(10), client.get("https://ipecho.net/plain").send()).await {
+        let response = match timeout(Duration::from_secs(10), client.get("https://steamcommunity.com/market/").send()).await {
             Ok(response) => response,
             Err(_) => return false, // Timeout or other error
         };
@@ -107,8 +126,8 @@ impl Proxy {
             false // Timeout occurred
         }
     }
-}
 
+}
 fn parse_proxies_txt(input: &str) -> Vec<Proxy> {
     input
         .lines()
@@ -203,7 +222,7 @@ fn parse_proxies_from_response(response_str: &str, pandas_parser: &PandasParser)
     let mut proxies: Vec<Proxy> = Vec::new();
 
     // Parse the HTML document
-    let document = Html::parse_document(&response_str);
+    let document = Html::parse_document(response_str);
 
     // Check if pandas_parser.combined is None
     if pandas_parser.combined.is_none() {
@@ -325,55 +344,70 @@ async fn batch_test_proxies(proxy_list: Vec<Arc<Proxy>>, concurrent_limit: usize
     tested_proxies
 }
 
-#[tokio::main]
-async fn main() {
-    let file_name = "src\\sources.json";
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let file_path = current_dir.join(file_name);
-    println!("{:#?}", file_path);
-    let mut file = File::open(&file_path).expect("Failed to open file");
-
-    // Read the file content into a string
+async fn load_and_test_proxies_from_file(file_path: &str, concurrent_limit: usize) -> Vec<Proxy> {
+    // Read JSON file
+    let mut file = File::open(file_path).expect("Failed to open file");
     let mut json_content = String::new();
-    file.read_to_string(&mut json_content)
-        .expect("Failed to read file content");
+    file.read_to_string(&mut json_content).expect("Failed to read file content");
 
-    // Parse the JSON content into a Person struct
-    let proxysource: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
-    // Create an empty vector to hold proxies
-    
-    let mut proxy_list: Vec<Proxy> = Vec::new();
+    // Parse JSON content into Vec<Source>
+    let proxysources: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
 
-    //Print the parsed data
-    for source in proxysource {
-        // println!("Source ID: {}, URL: {}, Parser: {:#?}", source.id, source.url, source.parser);
-        println!("URL: {}", source.url);
-        let response: Result<String, reqwest::Error> = make_request(source.url, source.method).await;
-        let response_str: String = match response{
+    // Print initial count of proxies
+    println!("Initial number of proxies: {}", proxysources.len());
+
+    // Create tasks to process each source concurrently
+    let mut tasks = vec![];
+    for source in proxysources {
+        let task = tokio::spawn(async move {
+            let url = source.url.to_string();
+            let response = make_request(source.url.clone(), source.method.clone(), 10).await;
+            let response_str = match response {
                 Ok(result) => result,
                 Err(err) => {
                     eprintln!("Error: {}", err);
-                    continue;
+                    return vec![]; // Return empty vector if there's an error
                 }
             };
-        let proxies: Vec<Proxy> = process_response_and_update_proxies(&response_str, &source.parser);
-        let arc_proxies: Vec<Arc<Proxy>> = proxies.into_iter().map(Arc::new).collect();
-        let concurrent_limit = 300; // Define your concurrent limit here
-        println!("Initial length: {}", arc_proxies.len());
-        let tested_proxies = batch_test_proxies(arc_proxies, concurrent_limit).await;
-        println!("Final length: {}", tested_proxies.len());
-        proxy_list.extend(tested_proxies)
 
+            let proxies = process_response_and_update_proxies(&response_str, &source.parser);
+            let arc_proxies: Vec<Arc<Proxy>> = proxies.into_iter().map(Arc::new).collect();
+            println!("Initial length: {}, link:{}", arc_proxies.len(), url);
+            let tested_proxies = batch_test_proxies(arc_proxies, concurrent_limit).await;
+            println!("Final length: {}, link:{}", tested_proxies.len(), url);
+            tested_proxies
+        });
+        tasks.push(task);
     }
+
+    // Collect results from tasks
+    let mut proxy_list = vec![];
+    for task in tasks {
+        let result = task.await.expect("Task panicked");
+        proxy_list.extend(result);
+    }
+
+    println!("Total proxies tested: {}", proxy_list.len());
+    proxy_list
+}
+
+#[tokio::main]
+async fn main() {
+    // Adjust the file path as needed
+    let file_path = "src\\sources.json";
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let file_path = current_dir.join(file_path);
+
+    let proxy_list = load_and_test_proxies_from_file(file_path.to_str().unwrap(), 50).await;
+    println!("Final list of proxies: {:?}", proxy_list);
+
+    // let arc_proxies: Vec<Arc<Proxy>> = proxy_list.into_iter().map(Arc::new).collect();
+    // test_proxies_speed(arc_proxies, url, method).await;
 
     // Print the IP and port for each parsed proxy
     // for proxy in &proxy_list {
     //     println!("IP: {}, Port: {}", proxy.ip, proxy.port);
     // }
-
-    // Get the number of elements in the vector
-    let num_objects = &proxy_list.len();
-    // Print the number of objects
-    println!("Number of objects in the vector: {}", num_objects);
+    print!("done")
 
 }

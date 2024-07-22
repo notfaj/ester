@@ -216,6 +216,7 @@ dependencies = [
 name = "ester"
 version = "0.1.0"
 dependencies = [
+ "fake_user_agent",
  "futures",
  "reqwest",
  "scraper",
@@ -223,6 +224,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "fake_user_agent"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb698e419e0a497f072b9e58745448030989cba891478f9b523a39088b216ea8"
+dependencies = [
+ "fastrand",
 ]
 
 [[package]]
