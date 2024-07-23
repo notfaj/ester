@@ -117,8 +117,13 @@ impl Proxy {
         })
     }
 
+    fn to_url(&self) -> String {
+        format!("http://{}:{}", self.ip, self.port)
+        }
+    
+
     async fn test_proxy(&self) -> bool {
-        let proxy_url = format!("http://{}:{}", self.ip, self.port);
+        let proxy_url = self.to_url();
 
         // Create a reqwest client with proxy settings
         let client = match reqwest::Client::builder()
