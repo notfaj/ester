@@ -2,14 +2,10 @@ use serde::{Deserialize, Serialize};
 use reqwest::{Client, Proxy as RequestProxy, Method};
 use scraper::{Html, Selector};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use std::io;
-use std::fs::File;
-use std::io::Read;
-
 
 #[cfg(feature = "debug-print")]
 macro_rules! debug_println {
@@ -331,32 +327,14 @@ fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> V
 
 }
 
-
-fn get_executable_directory() -> PathBuf {
-    let current_file_path = file!();
-    let path = Path::new(current_file_path);
-    let parent_directory = path.parent().expect("Failed to get parent directory");
-    parent_directory.parent().expect("Failed to get executable directory").to_path_buf()
-}
-
 pub async fn get_proxies() -> Vec<Proxy> {
-    // let file_path = "assets\\sources.json";
-    // let current_dir = env::current_dir().expect("Failed to get current directory");
-    // let file_path = current_dir.join(file_path);
-    // println!("Full path to the file: {:?}", file_path);
-    // Get the current file path at compile time
-    
-    let mut file_path = get_executable_directory();
-    file_path.push("assets");
-    file_path.push("sources.json");
-
-    println!("Full path to the file: {:?}", file_path);
-
     let concurrent_limit = 50;
-    // Read JSON file
-    let mut file = File::open(file_path).expect("Failed to open file");
-    let mut json_content = String::new();
-    file.read_to_string(&mut json_content).expect("Failed to read file content");
+
+    // Include the file as bytes
+    let file_bytes: &'static [u8] = include_bytes!("../assets/sources.json");
+
+    // Convert bytes to a string
+    let json_content = String::from_utf8_lossy(file_bytes);
 
     // Parse JSON content into Vec<Source>
     let proxysources: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
