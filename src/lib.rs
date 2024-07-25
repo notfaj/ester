@@ -347,7 +347,7 @@ pub async fn get_proxies() -> Vec<Proxy> {
     for source in proxysources {
         let task = tokio::spawn(async move {
             let _url = source.url.to_string();
-            let response = make_request(source.url.clone(), source.method.clone(), 10).await;
+            let response = make_request(source.url.clone(), source.method.clone(), 20).await;
             let response_str = match response {
                 Ok(result) => result,
                 Err(err) => {
