@@ -1,11 +1,11 @@
-use serde::{Deserialize, Serialize};
-use reqwest::{Client, Proxy as RequestProxy, Method};
+use reqwest::{Client, Method, Proxy as RequestProxy};
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
 use std::io;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::time::Duration;
 
 #[cfg(feature = "debug-print")]
 macro_rules! debug_println {
@@ -35,7 +35,7 @@ pub struct PandasParser {
     pub table_index: u32,
     pub ip: Option<String>,
     pub port: Option<String>,
-    pub combined: Option<String>
+    pub combined: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -53,13 +53,15 @@ pub struct Source {
     pub id: String,
     pub url: String,
     pub method: String,
-    pub parser: Parser
+    pub parser: Parser,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Proxy {
     pub ip: String,
     pub port: u16,
+    pub source: Option<String>,
+    pub location: Option<String>,
 }
 
 impl Proxy {
@@ -68,67 +70,99 @@ impl Proxy {
         Ok(Self {
             ip: ip.to_string(),
             port: parsed_port,
+            source: None,
+            location: None,
         })
+    }
+
+    pub fn with_source(mut self, source_id: impl Into<String>) -> Self {
+        self.source = Some(source_id.into());
+        self
+    }
+
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
     }
 
     pub fn to_url(&self) -> String {
         format!("http://{}:{}", self.ip, self.port)
     }
-    
+
     pub async fn test_proxy(&self) -> bool {
         let proxy_url = self.to_url();
 
         let client = match reqwest::Client::builder()
             .proxy(RequestProxy::all(&proxy_url).expect("Invalid proxy URL"))
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(5))
             .build()
         {
             Ok(client) => client,
-            Err(_) => return false,
+            Err(_err) => {
+                debug_println!("Proxy client build failed: {}", _err);
+                return false;
+            }
         };
 
-        let response = match timeout(Duration::from_secs(10), client.get("https://steamcommunity.com/market/").send()).await {
-            Ok(response) => response,
-            Err(_) => return false,
-        };
+        match client.get("https://icanhazip.com/").send().await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    debug_println!("Proxy request returned bad status: {}", response.status());
+                    return false;
+                }
 
-        if let Ok(response) = response {
-            response.status().is_success()
-        } else {
-            false
+                match response.text().await {
+                    Ok(body) => {
+                        let received_ip = body.trim();
+                        let expected_ip = self.ip.trim();
+                        if received_ip == expected_ip {
+                            true
+                        } else {
+                            debug_println!(
+                                "Proxy IP mismatch: expected {}, got {}",
+                                expected_ip,
+                                received_ip
+                            );
+                            false
+                        }
+                    }
+                    Err(_err) => {
+                        debug_println!("Failed to read proxy response body: {}", _err);
+                        false
+                    }
+                }
+            }
+            Err(_err) => {
+                debug_println!("Proxy request failed: {}", _err);
+                false
+            }
         }
     }
 }
 
-pub async fn make_request(url: String, method: String, timeout_seconds: u64) -> Result<String, io::Error> {
-    let req_method = match method.to_uppercase().as_str() {
-        "GET" => Method::GET,
-        "POST" => Method::POST,
-        "PUT" => Method::PUT,
-        "DELETE" => Method::DELETE,
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported HTTP method")),
-    };
+pub async fn make_request(client: &Client, url: &str, method: &str) -> Result<String, io::Error> {
+    println!("make_request: {} {}", method, url);
+    let req_method: Method = method
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Unsupported HTTP method"))?;
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout_seconds))
-        .build()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let response = client
-        .request(req_method, &url)
-        .send()
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let response = client.request(req_method, url).send().await.map_err(|e| {
+        eprintln!("make_request error for {} {}: {}", method, url, e);
+        io::Error::new(io::ErrorKind::Other, e)
+    })?;
 
     if !response.status().is_success() {
-        return Err(io::Error::new(io::ErrorKind::Other, format!("Request failed with status code: {}", response.status())));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Request failed with status code: {}", response.status()),
+        ));
     }
 
-    let body = response
+    response
         .text()
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    Ok(body)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
 pub fn parse_proxies_txt(input: &str) -> Vec<Proxy> {
@@ -183,7 +217,7 @@ pub fn parse_proxies_json(response_str: &str) -> Vec<Proxy> {
                 continue;
             }
         };
-        
+
         let port = match element.get("port").and_then(|v| v.as_str()) {
             Some(port_str) => port_str,
             None => {
@@ -201,176 +235,145 @@ pub fn parse_proxies_json(response_str: &str) -> Vec<Proxy> {
     proxies
 }
 
-fn parse_proxies_from_response(response_str: &str, pandas_parser: &PandasParser) -> Vec<Proxy> {
-    let mut proxies: Vec<Proxy> = Vec::new();
-
-    // Parse the HTML document
+pub fn parse_proxies_from_response(response_str: &str, pandas_parser: &PandasParser) -> Vec<Proxy> {
     let document = Html::parse_document(response_str);
+    let table_selector = Selector::parse("table").expect("Invalid table selector");
+    let row_selector = Selector::parse("tr:not(:first-child)").expect("Invalid row selector");
+    let cell_selector = Selector::parse("td").expect("Invalid td selector");
 
-    // Check if pandas_parser.combined is None
-    if pandas_parser.combined.is_none() {
-        // Select the first table element in the document
-        let table_selector = Selector::parse("table").unwrap();
-        let table = match document.select(&table_selector).next() {
-            Some(table) => table,
-            None => {
-                println!("Table not found");
-                return proxies; // Return empty vector or handle not found case
-            }
-        };
-
-        // Iterate over each row in the table (excluding the first child)
-        for row in table.select(&Selector::parse("tr:not(:first-child)").unwrap()) {
-            let ip_selector = Selector::parse("td:nth-child(1)").unwrap();
-            let port_selector = Selector::parse("td:nth-child(2)").unwrap();
-
-            // Extract IP address and port number from the row
-            if let Some(ip_element) = row.select(&ip_selector).next() {
-                if let Some(port_element) = row.select(&port_selector).next() {
-                    let ip_address = ip_element.text().collect::<Vec<_>>()[0].to_string();
-                    let port_number = port_element.text().collect::<Vec<_>>()[0].to_string();
-
-                    let ip = ip_address.trim();
-                    let port = port_number.trim();
-
-                    // Attempt to create a Proxy instance from IP and port
-                    match Proxy::new(ip, port) {
-                        Ok(proxy) => {
-                            // Successfully created Proxy instance
-                            proxies.push(proxy);
-                        },
-                        Err(err) => {
-                            // Handle error if parsing fails
-                            eprintln!("Failed to create Proxy: {}", err);
-                        }
-                    }
-                }
-            }
+    let table = match document.select(&table_selector).next() {
+        Some(table) => table,
+        None => {
+            eprintln!("Table not found");
+            return Vec::new();
         }
-    } else if let Some(value) = pandas_parser.combined.as_ref() {
-        match value.as_str() {
-            "Proxy" => {
-                println!("pandas_parser.combined is 'Proxy'");
-                // Handle 'Proxy' case as needed
-                // Example: Some specific logic or action
-            },
-            _ => {
-                // Handle other cases if needed
-                todo!(); // Placeholder for future implementation
-            },
-        }
-    }
+    };
 
-    proxies // Return the vector of proxies
+    let combined_column = pandas_parser.combined.is_some();
+
+    table
+        .select(&row_selector)
+        .filter_map(|row| {
+            let cells: Vec<String> = row
+                .select(&cell_selector)
+                .map(|cell| cell.text().collect::<String>().trim().to_string())
+                .collect();
+
+            if combined_column {
+                let first_cell = cells.get(0)?;
+                let mut parts = first_cell.split(':');
+                let ip = parts.next()?.trim();
+                let port = parts.next()?.trim();
+                Proxy::new(ip, port).ok()
+            } else if cells.len() >= 2 {
+                Proxy::new(&cells[0], &cells[1]).ok()
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
-pub async fn batch_test_proxies(proxy_list: Vec<Arc<Proxy>>, concurrent_limit: usize) -> Vec<Proxy> {
-    let (tx, mut rx) = mpsc::channel(concurrent_limit);
+pub async fn batch_test_proxies(proxy_list: Vec<Proxy>, semaphore: Arc<Semaphore>) -> Vec<Proxy> {
+    println!("batch_test_proxies: testing {} proxies", proxy_list.len());
+    let mut handles = Vec::with_capacity(proxy_list.len());
 
     for proxy in proxy_list {
-        let tx = tx.clone();
-        let proxy_clone = proxy.clone();
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break,
+        };
 
-        tokio::spawn(async move {
-            if proxy_clone.test_proxy().await {
-                if let Err(_) = tx.send((*proxy_clone).clone()).await {
-                    eprintln!("Error sending result to channel");
-                }
+        handles.push(tokio::spawn(async move {
+            let _permit = permit;
+            if proxy.test_proxy().await {
+                Some(proxy)
+            } else {
+                None
             }
-        });
+        }));
     }
 
-    drop(tx);
-
     let mut tested_proxies = Vec::new();
-    while let Some(result) = rx.recv().await {
-        tested_proxies.push(result);
+    for handle in handles {
+        if let Ok(Some(proxy)) = handle.await {
+            tested_proxies.push(proxy);
+        }
     }
 
     tested_proxies
 }
 
-fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> Vec<Proxy> {
-    match parser{
-        Parser {
-            pandas: Some(pandas_parser),
-            json: None,
-            txt: None,
-        } => {
-            // println!("PandasParser found: {:?}", pandas_parser);
-            // Handle PandasParser case
-            parse_proxies_from_response(response_str, pandas_parser)
-        }
-        Parser {
-            pandas: None,
-            json: Some(_json_parser),
-            txt: None,
-        } => {
-            // println!("JsonParser found: {:?}", json_parser);
-            // Handle JsonParser case
-            parse_proxies_json(response_str)
-        }
-        Parser {
-            pandas: None,
-            json: None,
-            txt: Some(_txt_parser),
-        } => {
-            // println!("TxtParser found: {:?}", txt_parser);
-            // Handle TxtParser case
-            parse_proxies_txt(response_str)
-        }
-        _ => {
-            println!("Unknown or unsupported parser configuration");
-            Vec::new() // Return an empty vector or handle unsupported case
-        }
+pub fn process_response_and_update_proxies(response_str: &str, parser: &Parser) -> Vec<Proxy> {
+    if let Some(pandas_parser) = parser.pandas.as_ref() {
+        parse_proxies_from_response(response_str, pandas_parser)
+    } else if parser.json.is_some() {
+        parse_proxies_json(response_str)
+    } else if parser.txt.is_some() {
+        parse_proxies_txt(response_str)
+    } else {
+        eprintln!("Unknown or unsupported parser configuration");
+        Vec::new()
     }
-
 }
 
 pub async fn get_proxies() -> Vec<Proxy> {
-    let concurrent_limit = 50;
+    let test_concurrent_limit = 100;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("Failed to build HTTP client");
+
+    let test_semaphore = Arc::new(Semaphore::new(test_concurrent_limit));
 
     // Include the file as bytes
     let file_bytes: &'static [u8] = include_bytes!("../assets/sources.json");
 
-    // Convert bytes to a string
     let json_content = String::from_utf8_lossy(file_bytes);
+    let proxysources: Vec<Source> =
+        serde_json::from_str(&json_content).expect("Failed to parse JSON");
 
-    // Parse JSON content into Vec<Source>
-    let proxysources: Vec<Source> = serde_json::from_str(&json_content).expect("Failed to parse JSON");
+    println!("Starting get_proxies with {} sources", proxysources.len());
+    debug_println!("Initial number of proxy sources: {}", proxysources.len());
 
-    // Print initial count of proxies
-    debug_println!("Initial number of proxies: {}", proxysources.len());
-
-    // Create tasks to process each source concurrently
-    let mut tasks = vec![];
+    let mut tasks = Vec::with_capacity(proxysources.len());
     for source in proxysources {
-        let task = tokio::spawn(async move {
-            let _url = source.url.to_string();
-            let response = make_request(source.url.clone(), source.method.clone(), 20).await;
+        let client = client.clone();
+        let test_semaphore = test_semaphore.clone();
+        println!("Spawning task for source {}", source.id);
+        tasks.push(tokio::spawn(async move {
+            println!("[{}] request start", source.id);
+            let response = make_request(&client, &source.url, &source.method).await;
             let response_str = match response {
-                Ok(result) => result,
+                Ok(result) => {
+                    println!("[{}] request success ({} bytes)", source.id, result.len());
+                    result
+                }
                 Err(err) => {
-                    eprintln!("Error: {}", err);
-                    return vec![]; // Return empty vector if there's an error
+                    eprintln!("[{}] Error requesting {}: {}", source.id, source.url, err);
+                    return Vec::new();
                 }
             };
 
-            let proxies = process_response_and_update_proxies(&response_str, &source.parser);
-            let arc_proxies: Vec<Arc<Proxy>> = proxies.into_iter().map(Arc::new).collect();
-            debug_println!("Initial length: {}, link:{}", arc_proxies.len(), _url);
-            let tested_proxies = batch_test_proxies(arc_proxies, concurrent_limit).await;
-            debug_println!("Final length: {}, link:{}", tested_proxies.len(), _url);
+            let proxies = process_response_and_update_proxies(&response_str, &source.parser)
+                .into_iter()
+                .map(|proxy| proxy.with_source(source.id.clone()))
+                .collect::<Vec<_>>();
+            println!("[{}] parsed {} proxies", source.id, proxies.len());
+            let tested_proxies = batch_test_proxies(proxies, test_semaphore.clone()).await;
+            println!("[{}] tested {} proxies", source.id, tested_proxies.len());
             tested_proxies
-        });
-        tasks.push(task);
+        }));
     }
 
-    // Collect results from tasks
-    let mut proxy_list = vec![];
+    let mut proxy_list = Vec::new();
     for task in tasks {
-        let result = task.await.expect("Task panicked");
-        proxy_list.extend(result);
+        if let Ok(result) = task.await {
+            proxy_list.extend(result);
+        } else {
+            eprintln!("A proxy source task panicked");
+        }
     }
 
     debug_println!("Total proxies left: {}", proxy_list.len());
