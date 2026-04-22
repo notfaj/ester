@@ -2,6 +2,7 @@ use reqwest::{Client, Method, Proxy as RequestProxy};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -376,6 +377,16 @@ pub async fn get_proxies() -> Vec<Proxy> {
         }
     }
 
-    debug_println!("Total proxies left: {}", proxy_list.len());
-    proxy_list
+    // Remove duplicates based on ip:port combination
+    let mut seen = HashSet::new();
+    let deduplicated_proxies = proxy_list
+        .into_iter()
+        .filter(|proxy| {
+            let key = format!("{}:{}", proxy.ip, proxy.port);
+            seen.insert(key)
+        })
+        .collect::<Vec<_>>();
+
+    debug_println!("Total proxies after deduplication: {}", deduplicated_proxies.len());
+    deduplicated_proxies
 }
