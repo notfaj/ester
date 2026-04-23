@@ -142,6 +142,21 @@ impl Proxy {
     }
 }
 
+pub async fn test_proxy_timed(proxy: &Proxy, test_url: &str, timeout_secs: u64) -> Option<u64> {
+    let start = std::time::Instant::now();
+    let client = reqwest::Client::builder()
+        .proxy(RequestProxy::all(&proxy.to_url()).ok()?)
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .ok()?;
+    let resp = client.get(test_url).send().await.ok()?;
+    if resp.status().is_success() {
+        Some(start.elapsed().as_millis() as u64)
+    } else {
+        None
+    }
+}
+
 pub async fn make_request(client: &Client, url: &str, method: &str) -> Result<String, io::Error> {
     println!("make_request: {} {}", method, url);
     let req_method: Method = method

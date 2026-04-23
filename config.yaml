@@ -1,0 +1,18 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+filtering:
+  speed_threshold_ms: 3000
+  test_url: "http://icanhazip.com/"
+  check_timeout: 8
+  concurrent_checks: 20
+
+rotation:
+  strategy: "round-robin"
+
+health:
+  max_failures: 3
+
+recheck:
+  interval: 1800 
